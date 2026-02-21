@@ -1,0 +1,124 @@
+import sys
+!{sys.executable} -m pip install -q google-genai
+
+import pandas as pd
+from groq import Groq
+import re
+
+# ---- SETUP ----
+groq_client = Groq(api_key="YOUR-API-KEY")
+
+#---- ALTERNATE LLM FROM SARVAM CAN ALSO BE USED------
+#import pandas as pd
+#from sarvamai import SarvamAI
+#import re
+#client = SarvamAI(api_subscription_key="YOUR-API-KEY")
+
+# ---- LOAD DATA ----
+df = pd.read_excel("/YOUR-FILE-PATH/cardrecommender_input.xlsx")
+df = df.drop(columns=['S.No', 'Unnamed: 23'], errors='ignore')
+print(f"Loaded {len(df)} cards successfully!")
+
+# ---- CARD TO TEXT ----
+def card_to_text(row):
+    return f"""
+Card: {row.get('Card Name', 'N/A')} by {row.get('Bank Name', 'N/A')}
+Joining Fee: {row.get('Joining Fee', 'N/A')} | Renewal Fee: {row.get('Renewal Fee', 'N/A')}
+Spend-Based Waiver: {row.get('Spend-Based Waiver', 'N/A')}
+Rewards Rate: {row.get('Rewards Rate', 'N/A')}
+Welcome Benefits: {row.get('Welcome Benefits', 'N/A')}
+Movie & Dining: {row.get('Movie & Dining', 'N/A')}
+Travel: {row.get('Travel', 'N/A')}
+Domestic Lounge: {row.get('Domestic Lounge', 'N/A')}
+International Lounge: {row.get('International Lounge', 'N/A')}
+Golf: {row.get('Golf', 'N/A')}
+Insurance: {row.get('Insurance Benefits', 'N/A')}
+Fuel Surcharge: {row.get('Fuel Surcharge', 'N/A')}
+Foreign Currency Markup: {row.get('Foreign Currency Markup', 'N/A')}
+Interest Rate: {row.get('Interest Rates', 'N/A')}
+Category: {row.get('Mastercard Category', 'N/A')}
+"""
+
+# Build full database — all 311 cards
+all_cards_text = "\n---\n".join([card_to_text(row) for _, row in df.iterrows()])
+print(f"Card database ready — all {len(df)} cards loaded!")
+
+# ---- PARSE MONTHLY SPEND ----
+def parse_monthly_spend(user_input):
+    patterns = [
+        r'rs\.?\s*([\d,]+)\s*k',
+        r'rs\.?\s*([\d,]+)',
+        r'([\d,]+)\s*per month',
+        r'([\d,]+)\s*/\s*month',
+        r'([\d,]+)\s*a\s*month',
+        r'([\d,]+)\s*monthly',
+    ]
+    text = user_input.lower()
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            amount_str = match.group(1).replace(',', '')
+            amount = int(amount_str)
+            if 'k' in text[match.start():match.end()]:
+                amount *= 1000
+            return amount
+    return None
+
+# ---- RECOMMEND ----
+def recommend_card(user_query, monthly_spend=None):
+    waiver_section = ""
+    if monthly_spend:
+        annual_spend = monthly_spend * 12
+        waiver_section = f"""
+User spends Rs.{monthly_spend:,}/month = Rs.{annual_spend:,}/year.
+For each recommended card:
+- Check if Rs.{annual_spend:,} meets the waiver threshold
+- If YES: say "Fee WAIVED - you already meet the spend requirement"
+- If NO: say "Fee NOT waived - you need Rs.X more per month"
+- Show minimum monthly spend needed = waiver threshold divided by 12
+"""
+
+    prompt = f"""You are an expert Indian credit card advisor with deep knowledge of all major cards.
+
+Here is the complete database of all {len(df)} credit cards:
+
+{all_cards_text}
+
+User question: {user_query}
+{waiver_section}
+
+Recommend the TOP 3 most suitable cards from the full database. For each card provide:
+1. Card Name and Bank
+2. Why it perfectly matches the user needs
+3. Key benefits with actual numbers (rewards %, lounge visits, cashback limits)
+4. Fee Breakdown:
+   - Joining Fee
+   - Annual/Renewal Fee
+   - Waiver condition
+   {f"- Waiver math based on Rs.{monthly_spend:,}/month spend" if monthly_spend else ""}
+5. Watch-outs (caps, exclusions, fine print)
+
+Be specific, cite real numbers from the data. Rank from best to third best match."""
+
+    response = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000
+    )
+    return response.choices[0].message.content
+
+# ---- CHAT LOOP ----
+print("\nCredit Card Recommender - All 311 Cards Active!")
+print("Tip: Mention your monthly spend e.g. I spend Rs.50,000/month")
+print("Type exit to quit\n")
+
+while True:
+    user_input = input("You: ")
+    if user_input.lower() == "exit":
+        break
+    monthly_spend = parse_monthly_spend(user_input)
+    if monthly_spend:
+        print(f"Detected monthly spend: Rs.{monthly_spend:,} (Rs.{monthly_spend*12:,}/year)")
+    print("\nRecommendation:\n")
+    print(recommend_card(user_input, monthly_spend))
+    print("\n" + "="*60 + "\n")
