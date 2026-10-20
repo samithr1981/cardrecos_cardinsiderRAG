@@ -1,7 +1,6 @@
 # Credit Card Finder (India)
 
-**Live app:** https://YOUR-APP-NAME.streamlit.app  
-*(replace this link with your Streamlit URL after you deploy, see below)*
+**Live app:** https://cardrecoscardinsiderrag-dhsqzxzbm3aerjhhj6awzt.streamlit.app/  
 
 A Streamlit app where people enter their monthly spends and get the credit cards that fit best, using the 300+ card sheet in `cardrecommender_input.xlsx`.
 
