@@ -1,7 +1,10 @@
 """LLM review step: reads the raw text of a shortlist of cards and writes the final top-3 recommendation."""
 from __future__ import annotations
 
+import difflib
+import json
 import os
+import re
 
 import pandas as pd
 
@@ -77,14 +80,20 @@ PREFERENCES:
 CANDIDATE CARDS (the only cards you may recommend):
 {blocks}
 
-TASK: Recommend the TOP 3 cards for this customer, ranked best first. Use this format for each:
-### N. Card name (Bank)
-**Why it fits:** 1-2 sentences tied to the customer's biggest spend categories.
-**Estimated yearly value:** show simple arithmetic using ONLY rates in the data (spend x rate), then subtract the fee. Mention any cap or condition and say clearly if it could not be applied.
-**Fees:** joining fee, renewal fee, and whether the customer's Rs {profile.annual_spend:,.0f}/year spend meets the waiver condition.
-**Watch-outs:** caps, exclusions, redemption limits, forex markup (only if relevant).
-
-Then add a short line "Why not the others" naming 1-2 cards from the list that look attractive but fall short, and why.
+TASK: Recommend the TOP 3 cards for this customer, best first. Choose ONLY from the candidate cards above and copy the card name exactly.
+Respond with ONLY a JSON object (no markdown, no code fences) in this shape:
+{{
+  "recommendations": [
+    {{
+      "card_name": "exact name from the list",
+      "why_it_fits": "1-2 sentences tied to the customer's biggest spend categories",
+      "value_breakdown": "simple arithmetic using ONLY rates in the data (spend x rate), minus the fee; mention caps or conditions, and say clearly if something could not be applied",
+      "fees": "joining fee, renewal fee, and whether Rs {profile.annual_spend:,.0f}/year of spend meets the waiver condition",
+      "watch_outs": ["short caps, exclusions, redemption limits or forex points; only what is relevant"]
+    }}
+  ],
+  "why_not_others": "1-2 sentences naming 1-2 attractive cards from the list that fall short, and why"
+}}
 Keep points-to-rupee conversions explicit (e.g. "1 point = Rs 0.25 assumed") when the data does not state a value; the app's assumed value is Rs {profile.point_value:g} per point.
 {extra_note}"""
 
@@ -101,3 +110,48 @@ def recommend(prompt: str, api_key: str, max_tokens: int = 2200) -> str:
         messages=[{"role": "user", "content": prompt}],
     )
     return "".join(block.text for block in response.content if block.type == "text")
+
+
+def parse_recommendations(text: str, valid_names) -> dict | None:
+    """Parse the model's JSON reply. Returns None if it is unusable, so the caller can show the raw text instead.
+
+    Cards whose name is not in the shortlist are dropped, which guards against invented cards.
+    """
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", (text or "").strip(), flags=re.I)
+    start, end = t.find("{"), t.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(t[start : end + 1])
+    except ValueError:
+        return None
+    recs = data.get("recommendations") if isinstance(data, dict) else None
+    if not isinstance(recs, list):
+        return None
+    lookup = {n.lower(): n for n in valid_names}
+    out, seen = [], set()
+    for r in recs:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("card_name", "")).strip().lower()
+        key = name if name in lookup else next(iter(difflib.get_close_matches(name, list(lookup), n=1, cutoff=0.85)), None)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        watch = r.get("watch_outs") or []
+        if isinstance(watch, str):
+            watch = [watch]
+        out.append(
+            {
+                "name": lookup[key],
+                "why": str(r.get("why_it_fits") or "").strip(),
+                "value": str(r.get("value_breakdown") or "").strip(),
+                "fees": str(r.get("fees") or "").strip(),
+                "watch": [str(w).strip() for w in watch if str(w).strip()][:4],
+            }
+        )
+        if len(out) == 3:
+            break
+    if not out:
+        return None
+    return {"recommendations": out, "why_not_others": str(data.get("why_not_others") or "").strip()}

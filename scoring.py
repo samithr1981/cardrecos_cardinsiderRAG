@@ -84,6 +84,21 @@ COLUMN_DEFAULT_CATEGORY = {"Rewards Rate": None, "Movie & Dining": "dining", "Tr
 
 
 # ----------------------------------------------------------------------------- parsing helpers
+def inr(x: float) -> str:
+    """Rupees with Indian digit grouping, e.g. ₹8,76,000."""
+    digits = f"{abs(round(x)):d}"
+    if len(digits) > 3:
+        head, tail = digits[:-3], digits[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        digits = ",".join(groups + [tail])
+    return ("-" if x < 0 else "") + "₹" + digits
+
+
 def _clean(text) -> str:
     if text is None or (isinstance(text, float) and math.isnan(text)):
         return ""
@@ -255,7 +270,10 @@ def extract_card_features(row: pd.Series) -> dict:
 def prepare_cards(df: pd.DataFrame) -> pd.DataFrame:
     """Clean the sheet and attach parsed features (object column 'feat')."""
     df = df.drop(columns=["S.No", "Unnamed: 23", "Card Insider"], errors="ignore").copy()
-    df = df.dropna(subset=["Card Name"]).drop_duplicates(subset=["Card Name", "Bank Name"]).reset_index(drop=True)
+    df = df.dropna(subset=["Card Name"]).copy()
+    for col in ("Card Name", "Bank Name"):  # tidy stray whitespace/quotes in the sheet, e.g. "Federal Bank'"
+        df[col] = df[col].astype(str).str.strip().str.strip("'\"`")
+    df = df.drop_duplicates(subset=["Card Name", "Bank Name"]).reset_index(drop=True)
     df["feat"] = [extract_card_features(r) for _, r in df.iterrows()]
     return df
 
@@ -334,9 +352,9 @@ def score_cards(cards: pd.DataFrame, profile: Profile) -> pd.DataFrame:
         if renewal == 0:
             waiver_status = "No annual fee"
         elif waived:
-            waiver_status = f"Fee waived (spend ≥ ₹{threshold:,.0f}/yr)"
+            waiver_status = f"Fee waived (spend of {inr(threshold)} a year or more)"
         elif threshold:
-            waiver_status = f"Not waived – needs ₹{threshold:,.0f}/yr (₹{threshold / 12:,.0f}/month)"
+            waiver_status = f"Not waived. Needs {inr(threshold)} a year ({inr(threshold / 12)} a month)"
         else:
             waiver_status = "No waiver found in data"
         rows.append(
